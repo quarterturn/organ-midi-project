@@ -1,0 +1,124 @@
+{\rtf1\ansi\ansicpg1252\cocoartf1138\cocoasubrtf470
+{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+\margl1440\margr1440\vieww15640\viewh19660\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural
+
+\f0\b\fs24 \cf0 Not Dead Yet Presents:\
+Converting Home Organs to MIDI Keyboards\
+\
+
+\b0 Produced for the 2012 Raleigh, NC Maker Faire\
+\'a9 2012 Alexander Davis all rights reserved for commercial use\
+All information free for non-commercial use\
+\
+
+\b What is an Organ?
+\b0 \
+Organ refers to a keyboard musical instrument which simulates the sounds of other real instruments, such as the flute, oboe, horn etc\'85  Organs made it possible for a single musician to replicate the sound of many instruments at once. The first organs were pneumatically-operated - each key press directly controlled the flow of air to a tuned pipe, generating a specific note and timbre. At the start of the 20th century, organs became electric - at first using relays to operate air valve solenoids and later to using electromechanical and fully-electronic means of generating sound.\
+\
+
+\b What is MIDI?
+\b0 \
+MIDI refers to Musical Instrument Digital Interface. It is a standard for electronic instruments to be able to send note and sound parameters to each other. MIDI is a serial interface. It typically operates at 31250 bits per second.\
+\
+
+\b What kind of organ is this project about?
+\b0 \
+This project aims to allow the reuse of electronic organs from the mid to later 20th century - 1960s to 1970s. This is the time period where home electronic organs were most popular. We focus on organs from this period as they are plentiful, very cheap and easy to work on. Organs from this period are typically transistorized or integrated circuit (IC) top-octave synthesizers. They are not noted for realistic reproduction of actual instruments. However, for next to nothing you can at least get two or more decent keyboard actions, all sorts of switches which can be repurposed, an audio power amplifier (sometimes multiple), speakers and sometimes very nice hardwood cabinetry using oak or walnut.\
+\
+
+\b What is a top-octave synthesizer?
+\b0 \
+The first electronic organs used individual tuned oscillators for each note. 61 keys meant 61 oscillator circuits. This allowed for some variation in tuning which helped the sound be "fuller" and more "rich", but had the disadvantages of being expensive to build and cumbersome to tune and keep in tune. Top-octave synthesis solved this problem by basing all notes off of a master frequency.  The master frequency was made by a relatively stable circuit, usually a Colpitts oscillator. It would be above the range of hearing - maybe 1 mHz. This master frequency would then be divided electronically to produce each octave of each note. Using this method, every note would always be in-tune with all the other notes. ICs eventually became available to handle the dividing, which greatly reduced parts count.\
+\
+
+\b Top-octave synthesis architecture:
+\b0 \
+Home organs using top-octave synthesis generated sounds in the following manner:\
+1. The master frequency generator provided a high-frequency square-wave signal.\
+2. The master frequency was sent to divider circuits which divided the signal into the top octaves of all twelve notes in each octave. At first with discrete transistors or tubes and later with top-octave synthesis chips.\
+3. The top octave signals were then sent to divide-by-two circuits to successively to produce all the lower octaves for each of the twelve notes. At first with discrete transistors or tubes and later with divider chips.\
+4. Each note from each divide-by-two output is wired to a key contact on the keyboard. When a key is pressed, the note is sent to a shared bus. \
+\
+* This shared bus keyboard architecture is the focus of this project *\
+\
+5. Signals on the keyboard bus could be directly amplified, or they could be sent to filters for further processing. Without processing the sound was very "buzzy" due to the square wave shape. Filters could be used to integrate the waveform into a triangle wave or sine wave to produce other sounds. Sometimes each key contacted multiple busses which connected to different filters. These busses were selected with switches on the organs control panel, allowing the selection of different octaves or timbres.\
+\
+Look closely at the sides of the keyboard we used. You will see there are five busses. We have connected them all together in each keyboard to improve the chance of getting a good connection. Our keyboard is old and no doubt there is dirt and corrosion on the contacts. Recall that originally this keyboard used the busses to send the actual sounds from the top-octave synthesis circuits to the filters and amplifier. If the contacts were dirty you'd heard scratchy sounds. This is called signal-level keying, by the way. Later top-octave synthesizer organs used logic-level keying. Using this method, the keying could be done with 12-18v signals used in the TTL/ECL logic chips of the era. Compared to the millivolt levels of the audio, this much higher voltage could "cut" through minor contact oxidation. Keydowns were cleaned up with simple R-C filters and used to control an analog switch chip such as the CD4016 which did the actual audio switching.\
+\
+
+\b What about other keyboards?
+\b0 \
+This project focuses on adding MIDI to keyboards with a bussed keyboard architecture. This means each key makes contact with the same common connection. Typically it is difficult to change this arrangement. Modern synthesizers wire the keyboard differently - they use matrixed keys. This means the keys are connections where each row and column meet. These rows and columns are scanned by a microprocessor. At any given time, only one row or column is actually checked but it is done so quickly compared to the human player that there are never missed notes. Circuit designers prefer matrixed keyboard as they use the fewest microprocessor pins. If we wanted to directly scan the key contacts of a bussed keyboard, we would need as many pins as there are keys - this is not practical!\
+\
+
+\b So how do we scan all the bussed keys?
+\b0 \
+This project uses an integrated circuit (IC) called a parallel-input, serial-output shift register (PISO). The specific chip we use is the 74HC165. It is composed of 8 logic gates called "latches" and some other logic to "march" the state of each latch into and out of the chip one bit at a time. Since there are 8 inputs per chip and we want to scan 61 keys, we need 8 shift registers.\
+\
+Here's how it works:\
+1. The shift registers are all given the "command" to latch or "read" their inputs by means of the "latch" pin going high and then back to low.\
+2. The shift registers are all given the "command" to clock or shift at bit towards the serial output by means of the "clock" pin going high and then low. The first chip has its serial input connected to ground. Its output is then connected to the input of the next chip. This is repeated until the last chip. 64 clock pulses are needed to march all 64 bits of data out of the output pin.\
+3. The microcontroller reads each bit from the last serial output on every clock pulse and stores and converts that data into MIDI notes.\
+\
+
+\b How does the microcontroller convert the information from the shift registers into MIDI notes?
+\b0 \
+As described earlier, the microcontroller causes the shift registers to latch the data on each input and then shifts all 64 bits of data out of the registers. Here is the process for converting the shift register data into notes:\
+\
+Note: this process runs continually in a loop, thousands of times per second\
+\
+1. The shift registers are latched, reading the 61inputs all at once.\
+\
+Note: logic gates always need a reference for high or low. Usually it is best to provide a reference to "high". This was necessary for early integrated circuits called "emitter coupled logic" or "TTL". It was much less wasteful of power to pull inputs high on these chips than to try to pull them low. When we say "pull" we mean to connect a pin to a current source or sink via a resistor. Typically 10K Ohm is used. So, in our case, every input requires a connection to the supply voltage (5 V) via a 10K resistors. This is a lot of resistors, but luckily, resistors are very inexpensive. So, when we latch in the inputs, if no key is pressed a "high" logic state will be read. We connect the shared bus to ground (actually a pin on the microcontroller set to be a low output, which acts as a current sink). If a key is pressed, it "pulls" the shift register input pin to a "low" logic state. This means a key being "on" is actually read as "off", which is backwards, but we can fix this easily a little later.\
+\
+2. Shift register data is stored in an 8 byte array of current key state and previous key state.\
+\
+Once the shift registers are latched, we start sending clock pulses. Each clock pulse causes the state of the shift register to shift one bit towards the output pin. Each chips output is connected to the input of the next chip. This allows the data to move sequentially through all the chips. But how do we deal with the "on is off" and "off is on"? The 74hc165 provides two serial outputs - a normal output and an inverted output. We connect the microcontroller to the inverted output of the last shift register. This changes the input states back to what we want - key down is "on" or "1" and key up is "off" or "0".\
+\
+We are using an 8-bit microcontroller. It works best and most efficiently with 8 bits (one byte) at a time. So, we read the shift register data one byte at a time.  The eight bits in a byte store the key state of eight keys. We need 8 bytes to store the key states of all 61 keys.\
+\
+We have to pay careful attention to how the data comes out of the shift registers. We wired our chips so the first registers first pin (input A) is connected to the rightmost key - we call that key "1". The last key is key "61". So, we are going to get the keystones out of the registers in right to left order. So the first byte read is actually going to be the last five keys (and the three unused inputs). We wanted our bytes to be stored in left to right order, so we also had to make sure we put the first bit received in each byte into the leftmost bit of the keystone byte.\
+\
+You can do it any order you want, but you have to be consistent!\
+\
+3. Key states are converted into push states; push states are stored in a 61-byte array holding either note on, note off or no change.\
+\
+So, we have 8 bytes worth of keystones for all 61 keys. But this is not exactly what we need to send MIDI commands. MIDI causes notes to sound with a "note on" command and the note stays on until "note off" is sent. So we have to convert the key state into a press state. We want to know when a key has be pressed so we can turn the note on and we want to know when a key has been released so we can turn the note off. We do not want to send "note on" thousands of times per second. That would flood the MIDI bus with data and it would not work.\
+\
+To generate push states from key states we have to store the current key state and the previous key state. We compare the two each scan loop and see if the state changed. If it went low-to-high, then a push down is registered and a "note on" is sent. If it went high-to-low, then a key up is registered and a "note off" is sent. If nothing changed, no new MIDI data is sent.\
+\
+We compute MIDI note information by storing a lowest note value and then adding the array index to it to get the actual note. This is the simplest way to approach it. If you want to get fancy you will need some sort of look-up table.\
+\
+4. The process repeats. We make sure we wait a minimum amount of time between keyboard scans. If we scan too fast we will pick up what is called "key bounce" - electrical noise generated when the key contacts open and close. If we read it we will get spurious key state information. All we have to do is wait a little longer then the typical "bounce" period. If the bounce period (10 microseconds in this project) has not yet elapsed, we simply exit the scanning loop and try again.\
+\
+
+\b How do we actually convert key states into push states?
+\b0 \
+In this project, we read the shift registers using software. This is called "bit banging". It is not the fastest method. There is a hardware facility in the ATMEGA chip called the SPI (Serial/Parallel Interface) which could do it much faster. However, it is harder to understand and it turns out for reading human inputs bit-banging is plenty fast. We make sure it is fast by using the microcontroller as efficiently as possible. We make all our key state comparisons using bitwise operators. The bitwise operators we use are "<<" shift left, ">>" shift right. "^" exclusive-OR (XOR) and "&" AND. XOR is used to see when key state within a state byte has changed when compared to the previous state. AND is used to select bits from a byte using a bitmask. The shift operators are used to move a bitmask bit left or right inside a byte to select a specific bit to compare. All these operations can be carried out in one or two clock cycles, making them very fast.\
+\
+If you want to learn more about how the code works, take a look at the source. We provide plenty of comments on how each part works. Again, the most difficult part is simply making sure you read and compare data in the correct order.\
+\
+
+\b There are only 8 shift registers so how do you scan two 61-key keyboards?
+\b0 \
+We are able to scan two keyboards with only one set of shift registers by means of multiplexing. At any time we scan only one keyboard and we alternate between them. This happens quickly enough that there is no possibility of ever missing a key event. We control which keyboard bus we want to read by using the fact when ATMEGA pins are set to outputs as "LOW" they can sink current but when they are set to inputs they are very high impedance and are essentially not connected when compared to the pull-up resistor current.\
+\
+
+\b Something is wrong with they way we handle notes on the upper and lower keyboards when they are close to each other. What is that?
+\b0 \
+Take for example the first eight keys. Play one note on the upper and a chord on the lower. You will hear the upper also play the chord played by the lower. Why is this? It is because we simply connected the upper and lower inputs together electrically, and within the eight notes we read in, even though only one bus is read at a time, a key on the other bus can provide a path for current to flow, causing "ghost keys" to be registered. The solution to this is to have each key connect to the shift register input through its own diode. The diode will prevent the current from flowing the "wrong" way and will eliminate the ghost keys. We did not have 122 diodes on hand so we left them out. The ghost keys are at least "musical". The correct way to do it, though, is to have a diode between every key and shift register input.\
+\
+
+\b What about sensing velocity?
+\b0 \
+Sensing velocity requires measuring the time between two contact states for a single key. Almost none of the top-octave synthesizers were velocity-sensitive. Traditional organ music controls the volume of the music with an expression pedal. So you are very unlikely to find a bussed keyboard that is set up for velocity sensing.\
+\
+We already use up a good deal of the available 2K of RAM in the ATMEGA 328P by storing key and note states. The note state storage is somewhat inefficient, as we use a whole byte to store just two bits of information for three values: on, off and no change. We could improve this by storing four states in one byte (two bits per state), but it would make the code harder to understand. To handle velocity we would have to store a timer snapshot for each key state and use that to compute the velocity. This would require storing 61 (or 122 for two keyboards) uint16_t values. As there is not enough RAM to store the state of every key, we would have to implement a buffer of a reasonable number of keys, say 16, and store the states and timer snapshots for those. At this point, you may want to consider off-the-shelf hardware solutions which handle matrixing, debouncing and velocity sensing for you. Or just buy a MIDI controller keyboard.\
+\
+
+\b Where can I find the source code and other files?
+\b0 \
+The source and files to the project are here: https://github.com/quarterturn/organ-midi-project\
+}
