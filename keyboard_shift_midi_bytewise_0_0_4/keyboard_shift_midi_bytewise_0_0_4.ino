@@ -11,14 +11,21 @@
  Wicked Device RBBB shield board (Vcc to Vin pin connected)
  5v 1A regulated switchmode power supply
  8x 74ls165 shift registers
+ HP Entertainment Center VFD display
  and old bussbar-type organ keyboard
  
  Git repository: https://github.com/quarterturn/organ-midi-project
  */
 
 // external libraries
+// button debouncing
+#include <Bounce.h>
 // fluxamasynth
 #include "Fluxamasynth.h"
+// hp media center vfd
+#include <HpDecVfd.h>
+// for using atmega eeprom
+#include <EEPROM.h>
 
 // constants
 // 8 bits all '1'
@@ -29,6 +36,23 @@
 
 // debounce interval - 10 ms
 #define DEBOUNCE 10
+// debounce/jitter interval for pots
+#define POT_DEBOUNCE 100
+
+/* NOTE
+   SoftwareSerial uses pin 4
+   so don't go using it for anything else, ok?
+*/
+
+// buttons
+#define BUTTON_BANK 2
+#define BUTTON_RANK 3
+
+// analog inputs
+#define I_POT_VOICE A0
+#define I_POT_VELOCITY A1
+#define I_POT_CUTOFF A2
+#define I_POT_RESONANCE A3
 
 // keyboard busses
 #define BUS_LOWER 9
@@ -52,10 +76,36 @@
 #define NUM_KEYS 64
 
 // default velocity
-#define DEFAULT_VELOCITY 110
+#define DEFAULT_VELOCITY 100
 
 // turn on debugging output via Serial
 #define DEBUG 0
+
+// eeprom memory locations
+#define EE_U_VOICE 0
+#define EE_L_VOICE 1
+#define EE_U_VELOCITY 2
+#define EE_L_VELOCITY 3
+#define EE_U_CUTOFF 4
+#define EE_L_CUTOFF 5
+#define EE_U_RESONANCE 6
+#define EE_L_RESONANCE 7
+#define EE_U_BANK 8
+#define EE_L_BANK 9
+#define EE_NEWCHIP1 127
+#define EE_NEWCHIP2 128
+
+// values to test if chip has been programmed
+#define NEWCHIP1_VAL 0xaa
+#define NEWCHIP2_VAL 0x55
+
+// bounce objects
+Bounce buttonMode = Bounce(BUTTON_BANK, DEBOUNCE);
+Bounce buttonRank = Bounce(BUTTON_RANK, DEBOUNCE);
+
+// create a vfd object based on HpDecVfd class
+// pass the pins to use to the constructor
+HpDecVfd vfd(6, 7);
 
 // create a synth object
 Fluxamasynth synth;
@@ -67,8 +117,6 @@ Fluxamasynth synth;
 // 0 means nothing happened
 // 1 means just pressed
 // takes up 1024 bytes of RAM total
-// this could be done better - maybe store 2 nybbles per byte
-// as they say, this is an exercise left to the student
 byte pressStateLower[NUM_KEYS] = {0};
 byte pressStateUpper[NUM_KEYS] = {0};
 
@@ -76,23 +124,46 @@ byte pressStateUpper[NUM_KEYS] = {0};
 // initialize with a 1 in the LSB; this represents key 1 the leftmost key
 uint8_t noteSel = 1;
 
-
 // channel for upper manual
 byte upperChannel = 0;
 // channel for lower manual
 byte lowerChannel = 1;
+// master volume
+byte masterVolume = 110;
+
+// analog input values
+// we store previous and current
+byte potVoicePrevious = 0;
+byte potVoiceCurrent = 0;
+byte potVelocityPrevious = 0;
+byte potVelocityCurrent = 0;
+byte potCutoffPrevious = 0;
+byte potCutoffCurrent = 0;
+byte potResonancePrevious = 0;
+byte potResonanceCurrent = 0;
+
+// voice parameters
 // bank for upper manual
 byte upperBank = 0;
 // bank for lower manual
 byte lowerBank = 0;
-// instrument for upper manual
-// drawbar organ for testing
-byte upperInstrument = 0;
-// instrument for lower manual
-// synth bass for testing
-byte lowerInstrument = 50;
+// voice for upper manual
+// default is piano
+byte upperVoice = 0;
+// voice for lower manual
+// default is string ensemble
+byte lowerVoice = 49;
 // master volume
-byte masterVolume = 120;
+// velocity
+byte upperVelocity = 110;
+byte lowerVelocity = 110;
+// resonance
+byte upperResonance = 0;
+byte lowerResonance = 0;
+// cutoff
+byte upperCutoff = 127;
+byte lowerCutoff = 127;
+
 
 // note index
 byte index;
@@ -103,8 +174,22 @@ byte theNote;
 // for tracking time in delay loops
 unsigned long previousMillis;
 
+// track which keyboard we are setting values on
+byte setUpper = 1;
+
 void setup()
 {
+
+  // button setup
+  // buttons are active low
+  // pull-ups enabled
+  pinMode(BUTTON_BANK, INPUT);
+  digitalWrite(BUTTON_BANK, HIGH);
+  pinMode(BUTTON_RANK, INPUT);
+  digitalWrite(BUTTON_RANK, HIGH);
+  
+  // analog inputs configured by default
+
   // bus setup
   // start off with both busses inactive
   // a bus is active if it is an output and low
@@ -120,19 +205,71 @@ void setup()
   digitalWrite(SHIFT_CLOCK, LOW);
   pinMode(SHIFT_DATA, INPUT);
 
+  // initialize and clear the display
+  vfd.begin(1);
+  vfd.setCursor(0, 0);
+  vfd.print("SHIFT-IN DEMO");
+  vfd.setCursor(0, 1);
+  vfd.print("V. 0.0.4 6/12");
+  delay(5000);
+  vfd.clear();
+
   // uart serial setup
   Serial.begin(9600);
-  synth.midiReset(); 
-
+  synth.midiReset();
+  
+  // check the eeprom to see if it has been programmed
+  if ((EEPROM.read(EE_NEWCHIP1) + EEPROM.read(EE_NEWCHIP2)) == 0xff)
+  {
+    // the eeprom has been programmed so read in the values
+    upperVoice = EEPROM.read(EE_U_VOICE);
+    lowerVoice = EEPROM.read(EE_L_VOICE);
+    upperVelocity = EEPROM.read(EE_U_VELOCITY);
+    lowerVelocity = EEPROM.read(EE_L_VELOCITY);
+    upperCutoff = EEPROM.read(EE_U_CUTOFF);
+    lowerCutoff = EEPROM.read(EE_L_CUTOFF);
+    upperResonance = EEPROM.read(EE_U_RESONANCE);
+    lowerResonance = EEPROM.read(EE_L_RESONANCE);
+    upperBank = EEPROM.read(EE_U_BANK);
+    lowerBank = EEPROM.read(EE_L_BANK);
+  }
+  else
+  {
+    // write the defaults to the eeprom
+    EEPROM.write(EE_U_VOICE, upperVoice);
+    EEPROM.write(EE_L_VOICE, lowerVoice);
+    EEPROM.write(EE_U_VELOCITY, upperVelocity);
+    EEPROM.write(EE_L_VELOCITY, lowerVelocity);
+    EEPROM.write(EE_U_CUTOFF, upperCutoff);
+    EEPROM.write(EE_L_CUTOFF, lowerCutoff);
+    EEPROM.write(EE_U_RESONANCE, upperResonance);
+    EEPROM.write(EE_L_RESONANCE, lowerResonance);
+    EEPROM.write(EE_U_BANK, upperBank);
+    EEPROM.write(EE_L_BANK, lowerBank);
+    EEPROM.write(EE_NEWCHIP1, NEWCHIP1_VAL);
+    EEPROM.write(EE_NEWCHIP2, NEWCHIP2_VAL);
+  }
+  
   // enable chorus
   synth.setChorus(0, 1, 30, 30, 10);
-  // max. master volume
-  synth.setMasterVolume(100);
+
+  synth.setMasterVolume(100);	// max. master volume
+//  synth.setChannelVolume(channel, 60);
+//  synth.setMasterPan(pan1, pan2);
+
 
   // configure the voices
-  synth.programChange(upperBank * 127, upperChannel, upperInstrument - 1);
-  synth.programChange(lowerBank * 127, lowerChannel, lowerInstrument - 1);
-  
+  synth.programChange(upperBank * 127, upperChannel, upperVoice);
+  synth.programChange(lowerBank * 127, lowerChannel, lowerVoice);
+  synth.setChannelVolume(upperChannel, upperVelocity);
+  synth.setChannelVolume(lowerChannel, lowerVelocity);
+  synth.setTVFCutoff(upperChannel, upperCutoff);
+  synth.setTVFCutoff(lowerChannel, lowerCutoff);
+  synth.setTVFResonance(upperChannel, upperResonance);
+  synth.setTVFResonance(lowerChannel, lowerResonance);
+ 
+  // display the initial values
+  updateDisplay();
   
 }
 
@@ -178,7 +315,7 @@ void loop()
     }
     
     // print a . every eight press states to make it more readable
-    if (DEBUG == 1)
+    if (DEBUG == 1)  
     {    
       if ((index % 8) == 0)
       {
@@ -192,6 +329,18 @@ void loop()
       Serial.print(pressStateLower[index], DEC);
     }
   }
+  
+  // check the buttons and update the display
+  if (checkButtons() > 0)
+  {
+    updateDisplay();
+  }
+  
+  // check the pots and update the display
+  if (getPots() == 1)
+  {
+    updateDisplay(); 
+  }  
   
   // delay for testing
   if (DEBUG == 1)
@@ -285,11 +434,13 @@ void getKeystate()
     // loop through each bit in each shift chip byte
     // do it backwards to get the byte in the correct order
     for (int j = (DATA_WIDTH - 1); j >= 0 ; j--)
+    // for (int j = 0; j < DATA_WIDTH; j++)
     {
       bitVal = digitalRead(SHIFT_DATA);
   
       // set the corresponding bit in the selected byte of currentState
       // byteVal is the current state of the selected byte or chip
+      // byteVal |= (bitVal << ((DATA_WIDTH - 1) - j));
       byteVal = byteVal + (bitVal << j);
   
       // pulse the Clock to get the next bit (rising edge shifts the next bit)
@@ -445,4 +596,365 @@ void getKeystate()
   return;
 }
   
+//---------------------------------------------------------------------------------------------//
+// function getPots()
+// gets the state of the analog inputs connected to the potentiometers
+// returns 1 if values changed, 0 if no change
+//---------------------------------------------------------------------------------------------//
+byte getPots()
+{
+  byte potChanged = 0;
+  
+  static long lastPotTime;
+  
+  // handle when millis counter overflows
+  if (millis() <  lastPotTime)
+  {
+    lastPotTime = millis();
+  }
+  
+  // the debounce period has not elapsed yet
+  // go back and handle other stuff in the main loop
+  if ((lastPotTime + POT_DEBOUNCE) > millis())
+  {
+    return 0;
+  }
+  
+  // otherwise DEBOUNCE has elapsed so reset the timer
+  lastPotTime = millis();
+  
+  // read the analog inputs and scale to 0 - 127
+  potVoiceCurrent = map(analogRead(I_POT_VOICE), 40, 960, 0, 127);
+  potVelocityCurrent = map(analogRead(I_POT_VELOCITY), 40, 960, 0, 127);
+  potCutoffCurrent = map(analogRead(I_POT_CUTOFF), 40, 960, 0, 127);
+  potResonanceCurrent = map(analogRead(I_POT_RESONANCE), 40, 960, 0, 127);
+  
+  // something crazy is going on with map
+  // values are going higher than 127
+  // cheap fix
+  if (potVoiceCurrent > 127)
+  {
+    potVoiceCurrent = 127;
+  }
+  if (potVelocityCurrent > 127)
+  {
+    potVelocityCurrent = 127;
+  }
+  if (potCutoffCurrent > 127)
+  {
+    potCutoffCurrent = 127;
+  }
+  if (potResonanceCurrent > 127)
+  {
+    potResonanceCurrent = 127;
+  }
+  
+  // see if the values have changed
+  // send the midi value if there is a change
+  if (potVoiceCurrent != potVoicePrevious)
+  {
+    potVoicePrevious = potVoiceCurrent;
+    potChanged = 1;
+    if (setUpper == 1)
+    {
+      upperVoice = potVoiceCurrent;
+      synth.programChange(upperBank * 127, upperChannel, upperVoice);
+    }
+    else
+    {
+      lowerVoice = potVoiceCurrent;
+      synth.programChange(lowerBank * 127, lowerChannel, lowerVoice);
+    }
+  }
+  if (potVelocityCurrent != potVelocityPrevious)
+  {
+    potVelocityPrevious = potVelocityCurrent;
+    potChanged = 1;
+    if (setUpper == 1)
+    {
+      upperVelocity = potVelocityCurrent;
+      // I decided to use volume not velocity so it could be changed while notes are held down
+      synth.setChannelVolume(upperChannel, upperVelocity);
+    }
+    else
+    {
+      lowerVelocity = potVelocityCurrent;
+      synth.setChannelVolume(lowerChannel, lowerVelocity);
+    }
+  }
+  if (potCutoffCurrent != potCutoffPrevious)
+  {
+    potCutoffPrevious = potCutoffCurrent;
+    potChanged = 1;
+    if (setUpper == 1)
+    {
+      upperCutoff = potCutoffCurrent;
+      synth.setTVFCutoff(upperChannel, upperCutoff);
+    }
+    else
+    {
+      lowerCutoff = potCutoffCurrent;
+      synth.setTVFCutoff(lowerChannel, lowerCutoff);
+    }
+  }
+  if (potResonanceCurrent != potResonancePrevious)
+  {
+    potResonancePrevious = potResonanceCurrent;
+    potChanged = 1;
+    if (setUpper == 1)
+    {
+      upperResonance = potResonanceCurrent;
+      synth.setTVFResonance(upperChannel, upperResonance);
+    }
+    else
+    {
+      lowerResonance = potResonanceCurrent;
+      synth.setTVFResonance(lowerChannel, lowerResonance);
+    }
+  }
+  
+  // return with potChanged status
+  return potChanged;
+}
 
+//---------------------------------------------------------------------------------------------//
+// function checkButtons()
+// gets the state of the buttons
+// returns 1 if values changed, 0 if no change
+//---------------------------------------------------------------------------------------------//
+byte checkButtons()
+{
+  byte modeState;
+  
+  // upper/lower pressed
+  if (buttonRank.update())
+  {
+    if (buttonRank.fallingEdge())
+    {
+      // toggle upper and lower
+      if (setUpper == 1)
+      {
+        setUpper = 0;
+      }
+      else
+      {
+        setUpper = 1;
+      }
+      return 1;
+    }
+  }
+  
+  // bank (set) pressed
+  if (buttonMode.update())
+  {
+    // get the button state
+    modeState = buttonMode.read();
+    if (modeState == LOW);
+    {
+      // if it has been low for more than 1 sec write the settingd to eeprom
+      if (buttonMode.duration() > 1000)
+      {
+        // test first so we dont wear out the eeprom
+        Serial.println("writing values to eeprom");
+      }
+      else
+      {
+        if (setUpper == 1)
+        {
+          if (upperBank == 1)
+          {
+            upperBank = 0;
+          }
+          else
+          {
+            upperBank = 1;
+          }
+          synth.programChange(upperBank * 127, upperChannel, upperVoice);
+        }
+        else
+        {
+          if (lowerBank == 1)
+          {
+            lowerBank = 0;
+          }
+          else
+          {
+            lowerBank = 1;
+          }
+          synth.programChange(lowerBank * 127, lowerChannel, lowerVoice);
+        }
+      }
+    }
+    return 1;
+  }
+  
+  // otherwise nothing pressed
+  return 0;
+}     
+          
+//---------------------------------------------------------------------------------------------//
+// function updateDisplay()
+// updated the display
+//---------------------------------------------------------------------------------------------//
+void updateDisplay()
+{
+  
+  // cursor to top row and leftmost character
+  vfd.setCursor(0, 0);
+  // B indicates bank
+  vfd.print("B");
+  // show the current bank
+  if (setUpper == 1)
+  {
+    vfd.print(upperBank);
+  }
+  else
+  {
+    vfd.print(lowerBank);
+  }
+  // print a space
+  vfd.print(" ");
+  // P indicates program
+  vfd.print("P");
+  // show the current program
+  if (setUpper == 1)
+  {
+    // format the values
+    // pad with spaces as appropriate
+    if (upperVoice < 10)
+    {
+      vfd.print("  ");
+    }
+    else if (upperVoice < 100)
+    {
+      vfd.print(" ");
+    }
+    vfd.print(upperVoice);
+  }
+  else
+  {
+    // format the values
+    // pad with spaces as appropriate
+    if (lowerVoice < 10)
+    {
+      vfd.print("  ");
+    }
+    else if (lowerVoice < 100)
+    {
+      vfd.print(" ");
+    }
+    vfd.print(lowerVoice);
+  }
+  // print a space
+  vfd.print(" ");
+  // P indicates program
+  vfd.print("V");
+  // show the current velocity
+  if (setUpper == 1)
+  {
+    // format the values
+    // pad with spaces as appropriate
+    if (upperVelocity < 10)
+    {
+      vfd.print("  ");
+    }
+    else if (upperVelocity < 100)
+    {
+      vfd.print(" ");
+    }
+    vfd.print(upperVelocity);
+  }
+  else
+  {
+    // format the values
+    // pad with spaces as appropriate
+    if (lowerVelocity < 10)
+    {
+      vfd.print("  ");
+    }
+    else if (lowerVelocity < 100)
+    {
+      vfd.print(" ");
+    }
+    vfd.print(lowerVelocity);
+  }
+  // cursor to bottom row and leftmost character
+  vfd.setCursor(0, 1);
+  // show upper or lower setting
+  if (setUpper == 1)
+  {
+    vfd.print("U");
+  }
+  else
+  {
+    vfd.print("L");
+  }
+  // print two spaces
+  vfd.print("  ");
+  // F indicates cutoff frequency
+  vfd.print("F");
+  // show the current frequency
+  if (setUpper == 1)
+  {
+    // format the values
+    // pad with spaces as appropriate
+    if (upperCutoff < 10)
+    {
+      vfd.print("  ");
+    }
+    else if (upperCutoff < 100)
+    {
+      vfd.print(" ");
+    }
+    vfd.print(upperCutoff);
+  }
+  else
+  {
+    // format the values
+    // pad with spaces as appropriate
+    if (lowerCutoff < 10)
+    {
+      vfd.print("  ");
+    }
+    else if (lowerCutoff < 100)
+    {
+      vfd.print(" ");
+    }
+    vfd.print(lowerCutoff);
+  }
+  // print a space
+  vfd.print(" ");
+  // Q indicates resonance
+  vfd.print("Q");
+  // show the current resonance
+  if (setUpper == 1)
+  {
+    // format the values
+    // pad with spaces as appropriate
+    if (upperResonance < 10)
+    {
+      vfd.print("  ");
+    }
+    else if (upperResonance < 100)
+    {
+      vfd.print(" ");
+    }
+    vfd.print(upperResonance);
+  }
+  else
+  {
+    // format the values
+    // pad with spaces as appropriate
+    if (lowerResonance < 10)
+    {
+      vfd.print("  ");
+    }
+    else if (lowerResonance < 100)
+    {
+      vfd.print(" ");
+    }
+    vfd.print(lowerResonance);
+  }
+  // that's it
+  return;
+}
